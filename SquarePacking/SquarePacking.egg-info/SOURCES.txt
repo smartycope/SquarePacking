@@ -1,0 +1,6 @@
+setup.py
+SquarePacking.egg-info/PKG-INFO
+SquarePacking.egg-info/SOURCES.txt
+SquarePacking.egg-info/dependency_links.txt
+SquarePacking.egg-info/requires.txt
+SquarePacking.egg-info/top_level.txt
