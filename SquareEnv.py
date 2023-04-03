@@ -15,6 +15,8 @@ from shapely.geometry import MultiPolygon, Polygon, Point
 from shapely.affinity import rotate
 from shapely.ops import unary_union
 
+from Cope import debug
+
 # Polygon.centroid would simplify (and probably speed up) these a bunch
 def multiPolygon2Space(multi, side_len=1):
     # Skip the first coordinate, because the first and last are the same
@@ -38,6 +40,7 @@ def compute_coords(corners: List[List[Tuple[float, float]]], sideLen=1) -> List[
         corner1, corner2, corner3, corner4 = square_corners
         x = (corner1[0] + corner2[0] + corner3[0] + corner4[0]) / 4
         y = (corner1[1] + corner2[1] + corner3[1] + corner4[1]) / 4
+        # rot_rad = math.atan2(corner2[1] - corner1[1], corner2[0] - corner1[0])
         rot_rad = math.atan2(corner4[1] - corner3[1], corner4[0] - corner3[0])
 
         # Add the x, y, and rotation angle values to the result list
@@ -57,6 +60,9 @@ def compute_corners(squares: List[Tuple[float, float, float]], sideLen=1) -> Lis
             rotated_corners.append((rotated_x, rotated_y))
         rtn.append(rotated_corners)
     return rtn
+
+# Not sure what this is or where it came from
+# squares = MultiPolygon(convert2shapely([(random.uniform(0, space), random.uniform(0, space), random.uniform(1, math.pi/2)) for i in range(N)], side_len=scale))
 
 class SquareEnv(gym.Env):
     metadata = {"render_modes": ["matplotlib", "shapely", 'pygame'], "render_fps": 4}
@@ -79,6 +85,7 @@ class SquareEnv(gym.Env):
             shift_rate is the maximum rate at which we can shift the x, y values per step
             rot_rate is the maximum rate at which we can rotate a box per step
         """
+        ### Parameter handling ###
         assert render_mode is None or render_mode in self.metadata["render_modes"]
         if search_space is None:
             search_space = N
@@ -101,11 +108,13 @@ class SquareEnv(gym.Env):
         self.extraNums = None
         self.userSurf = None
         self.userSurfOffset = 0
+        self._userPrinted = False
         self.font = None
         self._flat = flatten
 
         ### Define the spaces ###
         if self._flat:
+            # raise NotImplementedError('auto flattened spaces arent implemented yet')
             self.observation_space = spaces.Box(low=np.zeros((N*3,)),
                                             high=np.array([[search_space]*N, [search_space]*N, [math.pi/2]*N]).T.flatten(),
                                             dtype=np.float64, shape=(N*3,))
@@ -183,6 +192,9 @@ class SquareEnv(gym.Env):
 
             self.squares = space2MultiPolygon(newObs)
 
+        # if self.render_mode is not None:
+            # self.render()
+
         return newObs, self._get_info()
 
     def step(self, action):
@@ -199,6 +211,7 @@ class SquareEnv(gym.Env):
 
         # Make sure we don't leave the observation space
         if self.bound_method == 'clip':
+            # newObs = np.clip(newObs, [[0,0,0]]*self.N, [[self.search_space, self.search_space, math.pi/2]]*self.N)
             newObs[:,:2][newObs[:,:2] >  self.search_space] = self.search_space
             newObs[:,:2][newObs[:,:2] < 0]                  = 0
             newObs[:,2][newObs[:,2]   > math.pi/2]          = math.pi/2
@@ -216,6 +229,9 @@ class SquareEnv(gym.Env):
         info = self._get_info()
         terminated = self._get_terminated()
         reward = self.lossFunc()
+
+        # if self.render_mode is not None:
+            # self.render()
 
         if self._flat:
             newObs = newObs.flatten()
@@ -269,7 +285,7 @@ class SquareEnv(gym.Env):
             # Draw the text from the loss function
             self.surf.blit(self.extraNums, (150, 0))
             self.surf.blit(self.userSurf, (0, self.search_space * self.scale + self.offset))
-            # Draw the text from the self.print() function
+            # self._userPrinted = False
             self.userSurf.fill((255, 255, 255, 255))
             self.userSurfOffset = 0
 
@@ -338,6 +354,8 @@ class SquareEnv(gym.Env):
 
         self.userSurf.blit(self.font.render(str(string), True, (0,0,0)), (5 + ((self.userSurfOffset // 40) * 100), 5 + (self.userSurfOffset % 40)))
         self.userSurfOffset += 10
+        # self._userPrinted = True
+
 
     def overlap_area(self):
         overlapArea = 0
