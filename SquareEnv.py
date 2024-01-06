@@ -356,7 +356,6 @@ class SquareEnv(gym.Env):
         self.userSurfOffset += 10
         # self._userPrinted = True
 
-
     def overlap_area(self):
         overlapArea = 0
         for i, square1 in enumerate(self.squares.geoms):
