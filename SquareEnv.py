@@ -15,7 +15,7 @@ from shapely.geometry import MultiPolygon, Polygon, Point
 from shapely.affinity import rotate
 from shapely.ops import unary_union
 
-from Cope import debug
+# from Cope import debug
 
 # Polygon.centroid would simplify (and probably speed up) these a bunch
 def multiPolygon2Space(multi, side_len=1):

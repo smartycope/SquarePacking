@@ -1,0 +1,8 @@
+gymnasium
+numpy
+tensorflow
+matplotlib
+pygame
+shapely
+pydot
+graphviz
