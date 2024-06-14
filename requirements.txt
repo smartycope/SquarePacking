@@ -6,3 +6,4 @@ pygame
 shapely
 pydot
 graphviz
+Cope
