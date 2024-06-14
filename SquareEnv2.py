@@ -1,7 +1,8 @@
+import dis
 import enum
 import itertools
 import gymnasium as gym
-from typing import Literal
+from typing import Iterable, Literal
 from gymnasium import spaces
 import shapely.geometry as sg
 import shapely.ops as so
@@ -21,7 +22,7 @@ from Cope.gym import SimpleGym
 # from Cope import debug
 
 # Polygon.centroid would simplify (and probably speed up) these a bunch
-def multiPolygon2Space(multi, side_len=1):
+def multiPolygon2Space(multi):
     rtn = []
     for geom in multi.geoms:
         # Compute the x, y, and rotation angle values for this square
@@ -45,40 +46,43 @@ def multiPolygon2Space(multi, side_len=1):
 
     return np.array(rtn)
 
-def space2MultiPolygon(space, side_len=1):
+def space2MultiPolygon(space):
     # Autoreshape it if it's flat
     if len(space.shape) == 1:
         space = space.reshape((int(len(space)/3), 3))
-    return MultiPolygon([Polygon(corners) for corners in compute_corners(space, sideLen=side_len)])
+    # return MultiPolygon([Polygon(corners) for corners in compute_corners(space, sideLen=side_len)])
+    return MultiPolygon(map(Polygon, compute_all_corners(space)))
 
 # def compute_coords(corners: List[List[Tuple[float, float]]], sideLen=1) -> List[Tuple[float, float, float]]:
-#     rtn = []
-#     for square_corners in corners:
-#         # Compute the x, y, and rotation angle values for this square
-#         corner1, corner2, corner3, corner4 = square_corners
-#         x = (corner1[0] + corner2[0] + corner3[0] + corner4[0]) / 4
-#         y = (corner1[1] + corner2[1] + corner3[1] + corner4[1]) / 4
-#         # rot_rad = math.atan2(corner2[1] - corner1[1], corner2[0] - corner1[0])
-#         rot_rad = math.atan2(corner4[1] - corner3[1], corner4[0] - corner3[0])
+    # rtn = []
+    # for square_corners in corners:
+    #     # Compute the x, y, and rotation angle values for this square
+    #     corner1, corner2, corner3, corner4 = square_corners
+    #     x = (corner1[0] + corner2[0] + corner3[0] + corner4[0]) / 4
+    #     y = (corner1[1] + corner2[1] + corner3[1] + corner4[1]) / 4
+    #     # rot_rad = math.atan2(corner2[1] - corner1[1], corner2[0] - corner1[0])
+    #     rot_rad = math.atan2(corner4[1] - corner3[1], corner4[0] - corner3[0])
 
-#         # Add the x, y, and rotation angle values to the result list
-#         rtn.append(np.array((x, y, rot_rad)))
-#     return rtn
+    #     # Add the x, y, and rotation angle values to the result list
+    #     rtn.append(np.array((x, y, rot_rad)))
+    # return rtn
 
-def compute_corners(squares: List[Tuple[float, float, float]], sideLen=1) -> List[Tuple[float, float, float, float]]:
-    rtn = []
-    for x, y, rot_rad in squares:
-        # Compute the coordinates of the four corners of the square
-        half_side = sideLen / 2
-        corners = [(half_side, half_side), (half_side, -half_side), (-half_side, -half_side), (-half_side, half_side)]
-        rotated_corners = []
-        for corner in corners:
-            rotated_x = x + corner[0]*math.cos(rot_rad) - corner[1]*math.sin(rot_rad)
-            rotated_y = y + corner[0]*math.sin(rot_rad) + corner[1]*math.cos(rot_rad)
-            rotated_corners.append((rotated_x, rotated_y))
-        rtn.append(rotated_corners)
-    return rtn
+def compute_all_corners(squares: List[Tuple[float, float, float]]) -> np.ndarray:
+    # return np.array([compute_corners(square) for square in squares])
+    return np.array(list(map(compute_corners, squares)))
 
+def compute_corners(square: Tuple[float, float, float]) -> np.ndarray: #[float, float, float, float]:
+    # Rotation is in radians
+    x, y, rot = square
+    # Compute the coordinates of the four corners of the square
+    # half_side = sideLen / 2
+    return np.array([
+        (x + corner[0]*math.cos(rot) - corner[1]*math.sin(rot),
+         y + corner[0]*math.sin(rot) + corner[1]*math.cos(rot))
+        for corner in [(.5, .5), (.5, -.5), (-.5, -.5), (-.5, .5)]
+    ])
+
+# TODO: caching for efficiency
 
 class SquareEnv(SimpleGym):
     def __init__(self, *args,
@@ -147,7 +151,7 @@ class SquareEnv(SimpleGym):
         # self._flat = flatten
         self.start_valid = start_valid
         self._trying_to_overlap = False
-        self.squares: np.array
+        self.squares: np.ndarray # with the shape (N, 3): it gets flattened/reshaped to interface with the spaces
 
         ### Define the spaces ###
         # if self._flat:
@@ -176,16 +180,16 @@ class SquareEnv(SimpleGym):
     def _get_info(self):
         return {
             # 'Overlaps': not self.squares.is_valid,
-            'overlap': self.overlap_area(),
-            'len': self.side_len(),
-            'wasted': self.wasted_space(),
+            'overlap': self.overlap_area,
+            'len': self.side_len,
+            'wasted': self.wasted_space,
             # 'loss': lossFunc(self.squares),
         }
 
     def _get_terminated(self):
         # Optimal: 3.789, best known: 3.877084
         # There's no overlapping and we're better than the previous best
-        if self.N == 11 and self.side_len() < 3.877084 and self.is_valid:
+        if self.N == 11 and self.side_len < 3.877084 and self.is_valid:
             print('Holy cow, we did it!!!')
             print('Coordinates & Rotations:')
             print(self.squares)
@@ -211,8 +215,8 @@ class SquareEnv(SimpleGym):
         centered_importance = 0
         small_side_len = 7
 
-        side_len = self.side_len()
-        overlap = self.overlap_area()
+        side_len = self.side_len
+        overlap = self.overlap_area
 
         score -= math.e**side_len * side_importance
 
@@ -263,56 +267,58 @@ class SquareEnv(SimpleGym):
     def _step(self, action):
         self.steps += 1
         # Compute the shifted squares
-        obs = multiPolygon2Space(self.squares)
-        if self._flat:
-            assert action.shape == (self.N*3,), f'Action given to step is the wrong shape (Expected shape ({self.N*3},), got {action.shape})'
-            #TODO: I'm lazy and don't want to rewrite all that code
-            action = action.reshape((self.N,3))
-        else:
-            assert action.shape == (self.N,3), f'Action given to step is the wrong shape (Expected shape ({self.N,3}), got {action.shape})'
+        # obs = multiPolygon2Space(self.squares)
+        # if self._flat:
+        assert action.shape == (self.N*3,), f'Action given to step is the wrong shape (Expected shape ({self.N*3},), got {action.shape})'
+        action = action.reshape((self.N,3))
+        # else:
+        # assert action.shape == (self.N,3), f'Action given to step is the wrong shape (Expected shape ({self.N,3}), got {action.shape})'
 
-        newObs = obs + action
+
+        old_squares = self.squares
+        self.squares += action
 
         # Make sure we don't leave the observation space
         if self.bound_method == 'clip':
-            newObs[:,:2][newObs[:,:2] >  self.search_space] = self.search_space
-            newObs[:,:2][newObs[:,:2] < 0]                  = 0
-            newObs[:,2][newObs[:,2]   > math.pi/2]          = math.pi/2
-            newObs[:,2][newObs[:,2]   < 0]                  = 0
+            self.squares[:,:2][self.squares[:,:2] >  self.search_space] = self.search_space
+            self.squares[:,:2][self.squares[:,:2] < 0]                  = 0
+            self.squares[:,2][self.squares[:,2]   > math.pi/2]          = math.pi/2
+            self.squares[:,2][self.squares[:,2]   < 0]                  = 0
         elif self.bound_method == 'loop':
-            newObs[:,:2][newObs[:,:2] >  self.search_space] = 0
-            newObs[:,:2][newObs[:,:2] < 0]                  = self.search_space
-            newObs[:,2][newObs[:,2]   > math.pi/2]          = 0
-            newObs[:,2][newObs[:,2]   < 0]                  = math.pi/2
+            self.squares[:,:2][self.squares[:,:2] >  self.search_space] = 0
+            self.squares[:,:2][self.squares[:,:2] < 0]                  = self.search_space
+            self.squares[:,2][self.squares[:,2]   > math.pi/2]          = 0
+            self.squares[:,2][self.squares[:,2]   < 0]                  = math.pi/2
         # Loop the rotation, but clip the position
         elif self.bound_method == 'mixed':
-            newObs[:,:2][newObs[:,:2] >  self.search_space] = self.search_space
-            newObs[:,:2][newObs[:,:2] < 0]                  = 0
-            newObs[:,2][newObs[:,2]   > math.pi/2]          = 0
-            newObs[:,2][newObs[:,2]   < 0]                  = math.pi/2
+            self.squares[:,:2][self.squares[:,:2] >  self.search_space] = self.search_space
+            self.squares[:,:2][self.squares[:,:2] < 0]                  = 0
+            self.squares[:,2][self.squares[:,2]   > math.pi/2]          = 0
+            self.squares[:,2][self.squares[:,2]   < 0]                  = math.pi/2
         else:
             raise TypeError(f'Unknown `{self.bound_method}` bound_method provided')
 
         # self._trying_to_overlap = False
-        squares = space2MultiPolygon(newObs)
+        # squares = space2MultiPolygon(new_squares)
 
         if self.disallow_overlap:
             # self._trying_to_overlap = True
-            current = list(squares.geoms)
+            # current = list(squares.geoms)
             # for square1, square2 in itertools.combinations(current, 2):
             #     if square1.intersects(square2):
             #         i1 = current.index(square1)
             #         i2 = current.index(square2)
 
-            for i1, square1 in enumerate(current):
-                for i2, square2 in enumerate(current[i1+1:]):
-                    if square1.intersects(square2):
-                        # current[i1] = self.squares.geoms[i1]
-                        current[i2] = self.squares.geoms[i2]
-            squares = MultiPolygon(current)
+            for i1, square1 in enumerate(self.squares):
+                # i1+1, because if a intercets b, then b intersects a. We don't need to check it again
+                # We also don't need to check if a intersects a.
+                for i2, square2 in enumerate(self.squares[i1+1:]):
+                    if Polygon(compute_corners(square1)).intersects(Polygon(compute_corners(square2))):
+                    # if square1.intersects(square2):
+                        self.squares[i1] = old_squares[i1]
+                        self.squares[i2] = old_squares[i2]
+            # squares = MultiPolygon(current)
 
-        self.squares = squares
-        # info = self._get_info()
         # terminated = self._get_terminated()
         # reward = self.lossFunc()
 
@@ -329,76 +335,87 @@ class SquareEnv(SimpleGym):
 
         # Why does the Space constructor have a seed and not the .sample() method??
         if seed is None:
-            newObs = self.observation_space.sample()
-            self.squares = space2MultiPolygon(newObs)
+            self.squares = self.observation_space.sample().reshape((self.N, 3))
             # We can't be deterministic AND auto start at a valid point
             # Also make sure we're within the boundaries
             if self.start_valid:
-                while not self.within_boundary() or not self.squares.is_valid:
-                    newObs = self.observation_space.sample()
-                    self.squares = space2MultiPolygon(newObs)
+                while not self.within_boundary or not self.is_valid:
+                    self.squares = self.observation_space.sample().reshape((self.N, 3))
 
         else:
-            if self._flat:
-                newObs = spaces.Box(low=np.zeros((self.N,3)),
-                                    high=np.array([[self.search_space]*self.N, [self.search_space]*self.N, [math.pi/2]*self.N]).T,
-                                    dtype=np.float64, shape=(self.N,3), seed=seed).sample()
-            else:
-                newObs = spaces.Box(low=np.zeros((self.N*3,)),
-                                high=np.array([[self.search_space]*self.N, [self.search_space]*self.N, [math.pi/2]*self.N]).T.flatten(),
-                                dtype=np.float64, shape=(self.N*3,), seed=seed).sample()
+            # This is untested after the refactor
+            # if self._flat:
+            self.squares = spaces.Box(
+                low  =np.zeros((self.N,3)),
+                high =np.array([[self.search_space]*self.N, [self.search_space]*self.N, [math.pi/2]*self.N]).T,
+                dtype=np.float64,
+                shape=(self.N,3),
+                seed =seed,
+            ).sample()
+            # else:
+            #     self.squares = spaces.Box(low=np.zeros((self.N*3,)),
+            #                     high=np.array([[self.search_space]*self.N, [self.search_space]*self.N, [math.pi/2]*self.N]).T.flatten(),
+            #                     dtype=np.float64, shape=(self.N*3,), seed=seed).sample().reshape((self.N, 3))
 
-            self.squares = space2MultiPolygon(newObs)
 
     @property
     def is_valid(self):
         """ True if there's no overlapping """
+        return space2MultiPolygon(self.squares).is_valid
 
     @property
     def overlap_area(self):
-        overlapArea = 0
-        for i, square1 in enumerate(self.squares.geoms):
-            for square2 in list(self.squares.geoms)[i+1:]:
-                # if square1.intersects(square2):
-        # for square1 in self.squares.geoms:
-        #     for square2 in self.squares.geoms:
-        #         if square1 != square2:
-                overlapArea += square1.intersection(square2).area
-        return overlapArea
+        area = 0
+        # for i, square1 in enumerate(self.squares.geoms):
+            # for square2 in list(self.squares.geoms)[i+1:]:
+        for square1, square2 in itertools.combinations(self.squares, 2):
+            area += Polygon(compute_corners(square1)).intersection(Polygon(compute_corners(square2))).area
+        return area
+
+    @property
+    def min_rotated_rect_corners(self) -> Tuple['minx', 'miny', 'maxx', 'maxy']:
+        corners = compute_all_corners(self.squares)
+        xs = corners[:,:,0]
+        ys = corners[:,:,1]
+        return np.min(xs), np.min(ys), np.max(xs), np.max(ys)
 
     @property
     def side_len(self):
-        x, y = self.squares.minimum_rotated_rectangle.exterior.coords.xy
-        edge_length = (Point(x[0], y[0]).distance(Point(x[1], y[1])), Point(x[1], y[1]).distance(Point(x[2], y[2])))
-        return max(edge_length)
+        # minx = np.min(self.squares[])
+        # x, y = self.squares.minimum_rotated_rectangle.exterior.coords.xy
+        minx, miny, maxx, maxy = self.min_rotated_rect_corners
+        return max(maxx - minx, maxy - miny)
+        # edge_length = (Point(x[0], y[0]).distance(Point(x[1], y[1])), Point(x[1], y[1]).distance(Point(x[2], y[2])))
+        # return max(edge_length)
 
     @property
     def wasted_space(self):
-        return self.side_len()**2 - self.squares.area
+        return self.side_len**2 - self.N
 
     @property
     def within_boundary(self):
         if not self.boundary:
             return True
-        for square in self.squares.geoms:
-            center = square.centroid
-            if (center.x < self.boundary or
-                center.y < self.boundary or
-                abs(center.x - self.search_space) < self.boundary or
-                abs(center.y - self.search_space) < self.boundary
+        for x, y, rot in self.squares:
+            if (x < self.boundary or
+                y < self.boundary or
+                abs(x - self.search_space) < self.boundary or
+                abs(y - self.search_space) < self.boundary
             ): return False
         return True
 
 
-    def render_matplotlib(self):
-        plt.gca().set_aspect('equal')
-        for geom in self.squares.geoms:
-            xs, ys = geom.exterior.xy
-            plt.fill(xs, ys, alpha=0.5, fc='r', ec='none')
-        plt.show()
+    # def render_matplotlib(self):
+        # plt.gca().set_aspect('equal')
+        # for geom in self.squares.geoms:
+        #     xs, ys = geom.exterior.xy
+        #     plt.fill(xs, ys, alpha=0.5, fc='r', ec='none')
+        # plt.show()
 
     def render_shapely(self):
-        display(self.squares)
+        from IPython.display import display
+        disp = display(display_id=True)
+        disp.update(space2MultiPolygon(self.squares))
 
     def render_pygame(self):
         # self._init_pygame()
@@ -416,17 +433,17 @@ class SquareEnv(SimpleGym):
         # self.userSurfOffset = 0
 
         # Draw in the center of the window
-        space = multiPolygon2Space(self.squares)
-        space[:,:2] *= self.scale
-        space[:,:2] += self.offset
-        multi = space2MultiPolygon(space, self.scale)
+        # space = multiPolygon2Space(self.squares)
+        # space[:,:2] *= self.scale
+        # space[:,:2] += self.offset
+        # multi = space2MultiPolygon(space, self.scale)
 
         # Draw all the polygons
-        for square in multi.geoms:
-            pygame.draw.polygon(self.surf, (200, 45, 45, 175), square.exterior.coords)
+        for square in self.squares:
+            pygame.draw.polygon(self.surf, (200, 45, 45, 175), (square[:,:2] * self.offset) + self.offset)
 
         # Draw the helpful texts
-        overlap = self.overlap_area()
+        # overlap = self.overlap_area
         # strings = (
         #     f'Step:          {self.steps}',
         #     f'Overlap:       {overlap:.2f} | {overlap / self.N**2:.0%}',
@@ -445,7 +462,7 @@ class SquareEnv(SimpleGym):
         #         self.surf.blit(self.font.render(string, True, (0,0,0)), (5, 5 + offset*10))
 
         # Draw the bounding box of the squares
-        gfxdraw.polygon(self.surf, (np.array(self.squares.minimum_rotated_rectangle.exterior.coords)*self.scale)+self.offset, (0,0,0))
+        gfxdraw.polygon(self.surf, (np.array(self.min_rotated_rect_corners)*self.scale)+self.offset, (0,0,0))
         # Draw the search space
         gfxdraw.rectangle(self.surf, (self.offset, self.offset, self.search_space*self.scale, self.search_space*self.scale), (0,0,0))
 
