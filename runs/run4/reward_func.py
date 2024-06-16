@@ -1,41 +1,37 @@
     def _get_reward(self):
         # We generally prefer living longer
-        score = 10000
-        boundary_badness = 0
-        side_importance = .09
+        score = 100
+        side_importance = 5
         centered_importance = 0
         small_side_len = 7
+        boundary_badness = 0.1
+        if not self.boundary:
+            boundary_badness = 0
 
-        side_len = self.side_len()
-        overlap = self.overlap_area()
-
-        score -= math.e**side_len * side_importance
+        # score -= math.e**(self.side_len * side_importance)
+        score -= self.side_len * side_importance
 
         # We like it if they're in a small area
-        if side_len < small_side_len:
-            score += 6000
+        if self.side_len < small_side_len:
+            score += 200
 
         # We want to incentivize not touching, instead of disincentivizing touching,
         # because this way it doesn't also disincentivize longer runs
         # (if the reward is positive by default (not touching), then a longer run is okay)
 
         # We don't like it when they overlap at all
-        if overlap > 0 or self._trying_to_overlap:
+        if self.overlap_area > 0:
             score -= 100_000
+            # We really don't like it when they overlap
+            score -= math.e**(self.overlap_area)
 
-        # We really don't like it when they overlap
-        score -= math.e**(overlap)
 
         # This is essentially a percentage of how much they're overlapping
-        # score -= overlap / (self.N - self.max_overlap)**2
+        # score -= self.overlap_area / (self.N - self.max_overlap)**2
 
         # I don't want them to just push up against the edges
         if boundary_badness or centered_importance:
-            for square in self.squares.geoms:
-                center = square.centroid
-                x = center.x
-                y = center.y
-
+            for x, y, _rot in self.squares:
                 # Left
                 if x < self.boundary:
                     score -= boundary_badness
@@ -51,6 +47,7 @@
                     score -= boundary_badness
 
                 # We want the squares to be close to the center
-                score -= (math.e ** dist([x, y], [self.search_space / 2, self.search_space / 2]) * centered_importance) / self.N
+                if centered_importance:
+                    score -= (math.e ** dist([x, y], [self.search_space / 2, self.search_space / 2]) * centered_importance) / self.N
 
         return score
