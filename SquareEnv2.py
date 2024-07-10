@@ -122,7 +122,7 @@ class SquareEnv(SimpleGym):
         self.N = N
         # self.steps = 0
         self.scale = 20
-        self.offset = 50
+        self.offset = 100
         self.bound_method = bound_method.lower()
         self.max_overlap = max_overlap
         self.max_steps = max_steps
@@ -140,7 +140,7 @@ class SquareEnv(SimpleGym):
         # self.font = None
         # self._flat = flatten
         self.start_config = start_config
-        self.movement = np.zeros((self.N, 3))
+        self.movement = np.ones((self.N, 3))
         self.squares: np.ndarray # with the shape (N, 3): it gets flattened/reshaped to interface with the spaces
 
         ### Define the spaces ###
@@ -192,30 +192,32 @@ class SquareEnv(SimpleGym):
             return True
 
         # If we're pretty small, and we're only making small adjustments, don't reset, we're doing good!
-        if not np.any(np.median(self.movement, axis=0)) and self.side_len > 4.5:
-            return True
+        # print(self.movement)
+        # if not np.all(np.median(self.movement, axis=1)) and self.side_len > 4.5:
+        #     return True
 
         return False
 
     def _get_reward(self):
         # We generally prefer living longer
-        score = 100 # Linear
+        score = 0 # Linear
         small_side_len = 5.5 # Scalar
-        longevity_importance = .5 # Multiplied
-        side_importance = 100 # Multiplied
-        centered_importance = 0 # Exponential
+        longevity_importance = 0 # Multiplied
+        side_importance = 1 # Multiplied
+        centered_importance = .5 # Exponential
         boundary_badness = 0 # Linear
         if not self.boundary:
             boundary_badness = 0
 
-        score += self.steps * longevity_importance
+        # score += self.steps * longevity_importance
 
         # score -= math.e**(self.side_len * side_importance)
-        score -= (self.side_len - small_side_len) * side_importance
+        # score -= (self.side_len - small_side_len) * side_importance
+        score -= self.side_len
 
         # We like it if they're in a small area
-        if self.side_len < small_side_len and self.start_config != 'array':
-            score += 200
+        # if self.side_len < small_side_len and self.start_config != 'array':
+        #     score += 200
 
         # We want to incentivize not touching, instead of disincentivizing touching,
         # because this way it doesn't also disincentivize longer runs
@@ -223,9 +225,10 @@ class SquareEnv(SimpleGym):
 
         # We don't like it when they overlap at all
         if self.overlap_area > 0:
-            score -= 100_000
+            score -= 10
             # We really don't like it when they overlap
-            score -= math.e**(self.overlap_area)
+            score -= self.overlap_area
+            # score -= math.e**(self.overlap_area)
 
         # This is essentially a percentage of how much they're overlapping
         # score -= self.overlap_area / (self.N - self.max_overlap)**2
@@ -234,22 +237,23 @@ class SquareEnv(SimpleGym):
         if boundary_badness or centered_importance:
             for x, y, _rot in self.squares:
                 # Left
-                if x < self.boundary:
-                    score -= boundary_badness
-                # Top
-                if y < self.boundary:
-                    score -= boundary_badness
+                # if x < self.boundary:
+                #     score -= boundary_badness
+                # # Top
+                # if y < self.boundary:
+                #     score -= boundary_badness
 
-                # Right
-                if abs(x - self.search_space) < self.boundary:
-                    score -= boundary_badness
-                # Bottom
-                if abs(y - self.search_space) < self.boundary:
-                    score -= boundary_badness
+                # # Right
+                # if abs(x - self.search_space) < self.boundary:
+                #     score -= boundary_badness
+                # # Bottom
+                # if abs(y - self.search_space) < self.boundary:
+                #     score -= boundary_badness
 
                 # We want the squares to be close to the center
                 if centered_importance:
-                    score -= (math.e ** dist([x, y], [self.search_space / 2, self.search_space / 2]) * centered_importance) / self.N
+                    # score -= (math.e ** dist([x, y], [self.search_space / 2, self.search_space / 2]) * centered_importance) / self.N
+                    score -= dist([x, y], [self.search_space / 2, self.search_space / 2]) * centered_importance
 
         return score
 
@@ -290,7 +294,7 @@ class SquareEnv(SimpleGym):
                         new_squares[i1] = self.squares[i1]
                         new_squares[i2] = self.squares[i2]
 
-        self.movement = self.squares - new_squares
+        # self.movement = self.squares - new_squares
         self.squares = new_squares
 
     def _reset(self, seed=None, options=None):
