@@ -1,4 +1,5 @@
 import dis
+from shapely import Point
 import enum
 import itertools
 import gymnasium as gym
@@ -69,7 +70,6 @@ def compute_corners(square: Tuple[float, float, float], side_len=1) -> np.ndarra
         for corner in [(half, half), (half, -half), (-half, -half), (-half, half)]
     ])
 
-# TODO: caching for efficiency
 
 class SquareEnv(SimpleGym):
     def __init__(self, *args,
@@ -105,7 +105,7 @@ class SquareEnv(SimpleGym):
             background_color=(255, 255, 255),
             print_color=(0, 0, 0),
             name='Square Packing',
-            show_vars={'FPS': 'fps'},
+            # show_vars={'FPS': 'fps'},
             assert_valid_action=False,
             verbose=False,
             **kwargs
@@ -164,100 +164,138 @@ class SquareEnv(SimpleGym):
         #                                 high=np.array([[shift_rate]*N, [ shift_rate]*N, [ rot_rate]*N]).T,
         #                                 dtype=np.float64, shape=(N,3))
 
+        self._obs_cache = None
+        self._info_cache = None
+        self._terminated_cache = None
+        self._reward_cache = None
+        self._is_valid_cache = None
+        self._overlap_area_cache = None
+        self._min_rotated_rect_extents_cache = None
+        self._side_len_cache = None
+        self._wasted_space_cache = None
+
     def _get_obs(self):
-        return self.squares.flatten()
+        if self._obs_cache is None:
+            self._obs_cache = self.squares.flatten()
+        return self._obs_cache
 
     def _get_info(self):
-        return {
-            # 'Overlaps': not self.squares.is_valid,
-            'overlap': self.overlap_area,
-            'len': self.side_len,
-            'wasted': self.wasted_space,
-            # 'loss': lossFunc(self.squares),
-        }
+        if self._info_cache is None:
+            self._info_cache = {
+                # 'Overlaps': not self.squares.is_valid,
+                'overlap': self.overlap_area,
+                'len': self.side_len,
+                'wasted': self.wasted_space,
+                # 'loss': lossFunc(self.squares),
+            }
+        return self._info_cache
 
     def _get_terminated(self):
-        # Optimal: 3.789, best known: 3.877084
-        # There's no overlapping and we're better than the previous best
-        if self.N == 11 and self.side_len < 3.877084 and self.is_valid():
-            print('Holy cow, we did it!!!')
-            print('Coordinates & Rotations:')
-            print(self.squares)
-            with open('~/SQUARE_PARAMETERS.txt', 'w') as f:
-                f.write(str(self.squares))
-            return True
+        if self._terminated_cache is None:
+            self._terminated_cache = False
+            # Optimal: 3.789, best known: 3.877084
+            # There's no overlapping and we're better than the previous best
+            if self.N == 11 and self.side_len < 3.877084 and self.is_valid():
+                print('Holy cow, we did it!!!')
+                print('Coordinates & Rotations:')
+                print(self.squares)
+                with open('~/SQUARE_PARAMETERS.txt', 'w') as f:
+                    f.write(str(self.squares))
+                self._terminated_cache = True
 
-        # If we're almost entirely overlapping, just kill it
-        if self.overlap_area > self.max_overlap:
-            return True
+            # If we're almost entirely overlapping, just kill it
+            elif self.overlap_area > self.max_overlap:
+                self._terminated_cache = True
 
-        # If we're pretty small, and we're only making small adjustments, don't reset, we're doing good!
-        # print(self.movement)
-        # if not np.all(np.median(self.movement, axis=1)) and self.side_len > 4.5:
-        #     return True
+            # If all the angles are about the same, we've reached the trivial solution. Give up and
+            # start over
+            # elif len(np.unique(angles, return_counts=True)[1]) < 3:
+            elif not np.any(np.round(self.squares[:,2], 1) % 1.6):
+                self._terminated_cache = True
 
-        return False
+            # If we're pretty small, and we're only making small adjustments, don't reset, we're doing good!
+            # print(self.movement)
+            # if not np.all(np.median(self.movement, axis=1)) and self.side_len > 4.5:
+            #     return True
+
+        return self._terminated_cache
 
     def _get_reward(self):
-        # We generally prefer living longer
-        score = 0 # Linear
-        small_side_len = 5.5 # Scalar
-        longevity_importance = 0 # Multiplied
-        side_importance = 1 # Multiplied
-        centered_importance = .5 # Exponential
-        boundary_badness = 0 # Linear
-        if not self.boundary:
-            boundary_badness = 0
+        if self._reward_cache is None:
+            # We generally prefer living longer
+            score = 0 # Linear
+            # small_side_len = 5.5 # Scalar
+            # longevity_importance = 0 # Multiplied
+            # side_importance = 1 # Multiplied
+            side_len_importance = 1 # Multiplied
+            centered_importance = 0 # Exponential
+            boundary_badness = 0 # Linear
+            absolute_overlap_penalty = 0 # Linear
+            overlap_area_importance = 0 # Multiplied
+            if not self.boundary:
+                boundary_badness = 0
 
-        # score += self.steps * longevity_importance
+            # score += self.steps * longevity_importance
 
-        # score -= math.e**(self.side_len * side_importance)
-        # score -= (self.side_len - small_side_len) * side_importance
-        score -= self.side_len
+            # score -= math.e**(self.side_len * side_importance)
+            # score -= (self.side_len - small_side_len) * side_importance
+            score -= self.side_len * side_len_importance
 
-        # We like it if they're in a small area
-        # if self.side_len < small_side_len and self.start_config != 'array':
-        #     score += 200
+            # We like it if they're in a small area
+            # if self.side_len < small_side_len and self.start_config != 'array':
+            #     score += 200
 
-        # We want to incentivize not touching, instead of disincentivizing touching,
-        # because this way it doesn't also disincentivize longer runs
-        # (if the reward is positive by default (not touching), then a longer run is okay)
+            # We want to incentivize not touching, instead of disincentivizing touching,
+            # because this way it doesn't also disincentivize longer runs
+            # (if the reward is positive by default (not touching), then a longer run is okay)
 
-        # We don't like it when they overlap at all
-        if self.overlap_area > 0:
-            score -= 10
-            # We really don't like it when they overlap
-            score -= self.overlap_area
-            # score -= math.e**(self.overlap_area)
+            # We don't like it when they overlap at all
+            if self.overlap_area > 0:
+                score -= absolute_overlap_penalty
+                # We really don't like it when they overlap
+                score -= self.overlap_area*overlap_area_importance
+                # score -= math.e**(self.overlap_area)
 
-        # This is essentially a percentage of how much they're overlapping
-        # score -= self.overlap_area / (self.N - self.max_overlap)**2
+            # This is essentially a percentage of how much they're overlapping
+            # score -= self.overlap_area / (self.N - self.max_overlap)**2
 
-        # I don't want them to just push up against the edges
-        if boundary_badness or centered_importance:
-            for x, y, _rot in self.squares:
-                # Left
-                # if x < self.boundary:
-                #     score -= boundary_badness
-                # # Top
-                # if y < self.boundary:
-                #     score -= boundary_badness
+            # I don't want them to just push up against the edges
+            if boundary_badness or centered_importance:
+                for x, y, _rot in self.squares:
+                    # Left
+                    # if x < self.boundary:
+                    #     score -= boundary_badness
+                    # # Top
+                    # if y < self.boundary:
+                    #     score -= boundary_badness
 
-                # # Right
-                # if abs(x - self.search_space) < self.boundary:
-                #     score -= boundary_badness
-                # # Bottom
-                # if abs(y - self.search_space) < self.boundary:
-                #     score -= boundary_badness
+                    # # Right
+                    # if abs(x - self.search_space) < self.boundary:
+                    #     score -= boundary_badness
+                    # # Bottom
+                    # if abs(y - self.search_space) < self.boundary:
+                    #     score -= boundary_badness
 
-                # We want the squares to be close to the center
-                if centered_importance:
-                    # score -= (math.e ** dist([x, y], [self.search_space / 2, self.search_space / 2]) * centered_importance) / self.N
-                    score -= dist([x, y], [self.search_space / 2, self.search_space / 2]) * centered_importance
+                    # We want the squares to be close to the center
+                    if centered_importance:
+                        # score -= (math.e ** dist([x, y], [self.search_space / 2, self.search_space / 2]) * centered_importance) / self.N
+                        score -= dist([x, y], [self.search_space / 2, self.search_space / 2]) * centered_importance
 
-        return score
+            self._reward_cache = score
+        return self._reward_cache
 
     def _step(self, action):
+        # Invalidate caches
+        self._obs_cache = None
+        self._info_cache = None
+        self._terminated_cache = None
+        self._reward_cache = None
+        self._is_valid_cache = None
+        self._overlap_area_cache = None
+        self._min_rotated_rect_extents_cache = None
+        self._side_len_cache = None
+        self._wasted_space_cache = None
+
         # The action is given flattened, but self.squares looks like [[x, y, radians], ...]
         assert action.shape == (self.N*3,), f'Action given to step is the wrong shape (Expected shape ({self.N*3},), got {action.shape})'
         action = action.reshape((self.N,3))
@@ -298,6 +336,10 @@ class SquareEnv(SimpleGym):
         self.squares = new_squares
 
     def _reset(self, seed=None, options=None):
+        if 'manual' in options:
+            self.squares = options['manual'].reshape((self.N, 3))
+            return
+
         # Why does the Space constructor have a seed and not the .sample() method??
         if seed is None:
             # We can't be deterministic AND auto start at a valid point
@@ -309,11 +351,14 @@ class SquareEnv(SimpleGym):
                     self.squares = self.observation_space.sample().reshape((self.N, 3))
                     while not self.within_boundary or not self.is_valid(False):
                         self.squares = self.observation_space.sample().reshape((self.N, 3))
+                        # Invalidate the caches, so it actually recalculates
+                        self._within_boundary_cache = None
+                        self._is_valid_cache = None
                 case 'array':
                     cols = math.ceil(math.sqrt(self.N))
                     added = 0
                     # Minimum so they can't overlap: 1.4142135623730951 (math.sqrt((.5**2)*2) * 2)
-                    gap = 2
+                    gap = 1.4143
                     startx = self.boundary + gap / 2
                     starty = self.boundary + gap / 2
                     squares = []
@@ -350,41 +395,61 @@ class SquareEnv(SimpleGym):
             #                     high=np.array([[self.search_space]*self.N, [self.search_space]*self.N, [math.pi/2]*self.N]).T.flatten(),
             #                     dtype=np.float64, shape=(self.N*3,), seed=seed).sample().reshape((self.N, 3))
 
-
     def is_valid(self, shallow=True):
         """ True if there's no overlapping """
-        return (shallow and self.disallow_overlap) or space2MultiPolygon(self.squares).is_valid
+        if self._is_valid_cache is None:
+            self._is_valid_cache = (shallow and self.disallow_overlap) or space2MultiPolygon(self.squares).is_valid
+        return self._is_valid_cache
 
     @property
     def overlap_area(self):
-        if self.disallow_overlap:
-            return 0
-
-        area = 0
-        # for i, square1 in enumerate(self.squares.geoms):
-            # for square2 in list(self.squares.geoms)[i+1:]:
-        for square1, square2 in itertools.combinations(self.squares, 2):
-            area += Polygon(compute_corners(square1)).intersection(Polygon(compute_corners(square2))).area
-        return area
+        if self._overlap_area_cache is None:
+            if self.disallow_overlap:
+                self._overlap_area_cache = 0
+            else:
+                area = 0
+                # for i, square1 in enumerate(self.squares.geoms):
+                    # for square2 in list(self.squares.geoms)[i+1:]:
+                for square1, square2 in itertools.combinations(self.squares, 2):
+                    area += Polygon(compute_corners(square1)).intersection(Polygon(compute_corners(square2))).area
+                self._overlap_area_cache = area
+        return self._overlap_area_cache
 
     def min_rotated_rect_extents(self, side_len=1) -> Tuple['minx', 'miny', 'maxx', 'maxy']:
-        corners = compute_all_corners(self.squares)
-        xs = corners[:,:,0]
-        ys = corners[:,:,1]
-        return np.min(xs), np.min(ys), np.max(xs), np.max(ys)
+        if self._min_rotated_rect_extents_cache is None:
+            self._min_rotated_rect_extents_cache = space2MultiPolygon(self.squares).minimum_rotated_rectangle.exterior.coords
+        return self._min_rotated_rect_extents_cache
+
+        # rect = space2MultiPolygon(self.squares).minimum_rotated_rectangle
+        # x, y = rect.exterior.coords.xy
+        # edge_length = (Point(x[0], y[0]).distance(Point(x[1], y[1])), Point(x[1], y[1]).distance(Point(x[2], y[2])))
+        # return max(edge_length)
+        # corners = compute_all_corners(self.squares)
+        # xs = corners[:,:,0]
+        # ys = corners[:,:,1]
+        # return np.min(xs), np.min(ys), np.max(xs), np.max(ys)
 
     @property
     def side_len(self):
+        if self._side_len_cache is None:
+            x, y = self.min_rotated_rect_extents().xy
+            edge_length = (Point(x[0], y[0]).distance(Point(x[1], y[1])), Point(x[1], y[1]).distance(Point(x[2], y[2])))
+            self._side_len_cache =  max(edge_length)
+        return self._side_len_cache
+
         # minx = np.min(self.squares[])
         # x, y = self.squares.minimum_rotated_rectangle.exterior.coords.xy
-        minx, miny, maxx, maxy = self.min_rotated_rect_extents()
-        return max(maxx - minx, maxy - miny)
+        # minx, miny, maxx, maxy = self.min_rotated_rect_extents()
+        # return max(maxx - minx, maxy - miny)
+
         # edge_length = (Point(x[0], y[0]).distance(Point(x[1], y[1])), Point(x[1], y[1]).distance(Point(x[2], y[2])))
         # return max(edge_length)
 
     @property
     def wasted_space(self):
-        return self.side_len**2 - self.N
+        if self._wasted_space_cache is None:
+            self._wasted_space_cache = self.side_len**2 - self.N
+        return self._wasted_space_cache
 
     @property
     def within_boundary(self):
@@ -418,17 +483,19 @@ class SquareEnv(SimpleGym):
         # Draw all the polygons
         for square in compute_all_corners(scaled_squares, side_len=self.scale):
             # print(square)
-            pygame.draw.polygon(self.surf, (200, 45, 45, 175), square)
+            pygame.draw.polygon(self.surf, (0xA3, 0xE0, 0xC2, .6), square)
+            pygame.draw.polygon(self.surf, (0, 0, 0), square, width=1)
 
         # Draw the bounding box of the squares
-        minx, miny, maxx, maxy = self.min_rotated_rect_extents(side_len=self.scale)
-        corners = np.array([
-            [minx, miny],
-            [minx, maxy],
-            [maxx, maxy],
-            [maxx, miny],
-        ])
-        gfxdraw.polygon(self.surf, (corners*self.scale)+self.offset, (0,0,0))
+        # minx, miny, maxx, maxy = self.min_rotated_rect_extents(side_len=self.scale)
+        # corners = np.array([
+        #     [minx, miny],
+        #     [minx, maxy],
+        #     [maxx, maxy],
+        #     [maxx, miny],
+        # ])
+        # gfxdraw.polygon(self.surf, (corners*self.scale)+self.offset, (0,0,0))
+        gfxdraw.polygon(self.surf, (np.array(self.min_rotated_rect_extents())*self.scale)+self.offset, (0,0,200))
         # Draw the search space
         gfxdraw.rectangle(self.surf, (self.offset, self.offset, self.search_space*self.scale, self.search_space*self.scale), (0,0,0))
 
