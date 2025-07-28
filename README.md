@@ -1,5 +1,8 @@
 # SquarePacking
 
+![Senior Project Presentation](Senior%20Project%20Presentation%20-%20Horizontal.svg)
+
+
 This attempts to use a reinforcement learning algorithm based on a [Deep Deterministic Policy Gradient](https://spinningup.openai.com/en/latest/algorithms/ddpg.html) model for use with a continuous observation *and* action space, in order to solve the [*Square Packing in a Square*](https://en.wikipedia.org/wiki/Square_packing) problem for N=11 squares.
 
 That was a very intelligent sounding sentence. Let's break it down:
